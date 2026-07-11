@@ -3118,6 +3118,147 @@ describe('Client', () => {
         })
       );
     });
+
+    test('Execute batch invalidates each unique resource type returned', async () => {
+      const fetch = mockFetch(200, {
+        resourceType: 'Bundle',
+        type: 'transaction-response',
+        entry: [
+          { resource: { resourceType: 'Patient', id: 'patient-1' } },
+          { resource: { resourceType: 'Appointment', id: 'appointment-1' } },
+          { resource: { resourceType: 'Patient', id: 'patient-2' } },
+          {},
+          { resource: null },
+        ],
+      });
+      const client = new MedplumClient({ fetch });
+      const invalidateSearches = vi.spyOn(client, 'invalidateSearches');
+
+      await client.executeBatch(bundle);
+
+      expect(invalidateSearches).toHaveBeenCalledTimes(2);
+      expect(invalidateSearches).toHaveBeenNthCalledWith(1, 'Patient');
+      expect(invalidateSearches).toHaveBeenNthCalledWith(2, 'Appointment');
+    });
+
+    test('Execute batch invalidates affected searches while preserving unrelated cache', async () => {
+      const patientBundle: Bundle = {
+        resourceType: 'Bundle',
+        type: 'searchset',
+        entry: [{ resource: { resourceType: 'Patient', id: 'patient-1' } }],
+      };
+      const observationBundle: Bundle = {
+        resourceType: 'Bundle',
+        type: 'searchset',
+        entry: [
+          {
+            resource: {
+              resourceType: 'Observation',
+              id: 'observation-1',
+              status: 'final',
+              code: { text: 'Observation' },
+            },
+          },
+        ],
+      };
+      const transactionResponse: Bundle = {
+        resourceType: 'Bundle',
+        type: 'transaction-response',
+        entry: [{ resource: { resourceType: 'Patient', id: 'patient-2' } }],
+      };
+      const fetch = mockFetch(200, (url, options) => {
+        if (options?.method === 'POST') {
+          return transactionResponse;
+        }
+        if (url.includes('/Patient')) {
+          return patientBundle;
+        }
+        return observationBundle;
+      });
+      const client = new MedplumClient({ fetch, cacheTime: 60000 });
+
+      await client.search('Patient');
+      await client.search('Observation');
+      await client.executeBatch(bundle);
+      await client.search('Patient');
+      await client.search('Observation');
+
+      expect(fetch).toHaveBeenCalledTimes(4);
+    });
+
+    test('Execute batch invalidates caches for deletes without response resources', async () => {
+      const deleteBundle: Bundle = {
+        resourceType: 'Bundle',
+        type: 'transaction',
+        entry: [
+          {
+            request: {
+              method: 'DELETE',
+              url: 'Observation?code=http%3A%2F%2Floinc.org%7C8867-4',
+            },
+          },
+        ],
+      };
+      const fetch = mockFetch(200, {
+        resourceType: 'Bundle',
+        type: 'transaction-response',
+        entry: [{ response: { status: '204' } }],
+      });
+      const client = new MedplumClient({ fetch });
+      const invalidateSearches = vi.spyOn(client, 'invalidateSearches');
+
+      await client.executeBatch(deleteBundle);
+
+      expect(invalidateSearches).toHaveBeenCalledTimes(1);
+      expect(invalidateSearches).toHaveBeenCalledWith('Observation');
+    });
+
+    test('Execute batch prefers the URL resource type for PATCH payloads', async () => {
+      const patchBundle: Bundle = {
+        resourceType: 'Bundle',
+        type: 'transaction',
+        entry: [
+          {
+            resource: { resourceType: 'Parameters', parameter: [] },
+            request: {
+              method: 'PATCH',
+              url: 'Patient/patient-1',
+            },
+          },
+        ],
+      };
+      const fetch = mockFetch(200, {
+        resourceType: 'Bundle',
+        type: 'transaction-response',
+        entry: [{ response: { status: '200' } }],
+      });
+      const client = new MedplumClient({ fetch });
+      const invalidateSearches = vi.spyOn(client, 'invalidateSearches');
+
+      await client.executeBatch(patchBundle);
+
+      expect(invalidateSearches).toHaveBeenCalledTimes(1);
+      expect(invalidateSearches).toHaveBeenCalledWith('Patient');
+    });
+
+    test('Execute batch with no returned resources does not invalidate searches', async () => {
+      const emptyBundle: Bundle = {
+        resourceType: 'Bundle',
+        type: 'batch',
+        entry: [{}],
+      };
+      const fetch = mockFetch(200, {
+        resourceType: 'Bundle',
+        type: 'batch-response',
+        entry: [{}, { resource: null }],
+      });
+      const client = new MedplumClient({ fetch });
+      const invalidateSearches = vi.spyOn(client, 'invalidateSearches');
+
+      await client.executeBatch(emptyBundle);
+
+      expect(invalidateSearches).not.toHaveBeenCalled();
+    });
   });
 
   test('Send email', async () => {

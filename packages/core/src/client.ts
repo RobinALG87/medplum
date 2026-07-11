@@ -2897,8 +2897,36 @@ export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
    * @param options - Optional fetch options.
    * @returns The FHIR batch/transaction response bundle.
    */
-  executeBatch(bundle: Bundle, options?: MedplumRequestOptions): Promise<Bundle> {
-    return this.post(this.fhirBaseUrl, bundle, undefined, options);
+  async executeBatch(bundle: Bundle, options?: MedplumRequestOptions): Promise<Bundle> {
+    const result = await this.post(this.fhirBaseUrl, bundle, undefined, options);
+    const resourceTypes = new Set<ResourceType>();
+    const mutationMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+    const responseEntries = result.entry ?? [];
+    const requestEntries = bundle.entry ?? [];
+
+    for (let i = 0; i < Math.max(responseEntries.length, requestEntries.length); i++) {
+      const responseResourceType = responseEntries[i]?.resource?.resourceType;
+      if (responseResourceType) {
+        resourceTypes.add(responseResourceType as ResourceType);
+      }
+
+      const requestEntry = requestEntries[i];
+      const request = requestEntry?.request;
+      if (request && mutationMethods.has(request.method?.toUpperCase() ?? '')) {
+        const resourceType = request.url
+          ?.replace(/^(?:https?:\/\/[^/]+)?\/*/, '')
+          .split(/[/?]/, 1)[0] ?? requestEntry.resource?.resourceType;
+        if (resourceType) {
+          resourceTypes.add(resourceType as ResourceType);
+        }
+      }
+    }
+
+    for (const resourceType of resourceTypes) {
+      this.invalidateSearches(resourceType);
+    }
+
+    return result;
   }
 
   /**
@@ -4017,7 +4045,7 @@ export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
    * + 1 recovery, tracked via {@link RequestState.authAttempt}). The recovery re-mints via a
    * forced {@link MedplumClient.refresh} (bypassing the {@link MedplumClient.isAuthenticated}
    * short-circuit on the rejected token), single-flight so concurrent 401s share one re-mint.
-   * A second 401 is terminal: clear auth, `onUnauthenticated`, reject — never recurse.
+   * A second 401 is terminal: clear auth, `onUnauthenticated`, reject â€” never recurse.
    *
    * @param url - The URL of the original request.
    * @param options - Optional fetch request init options.
@@ -4133,7 +4161,7 @@ export class MedplumClient extends TypedEventTarget<MedplumClientEventMap> {
    * has already refreshed.
    *
    * @param gracePeriod - Optional grace period in milliseconds threaded through to the post-lock authentication check.
-   * @param force - When true, re-mint even if the current token still looks locally valid — used by the 401 recovery path, where the server has rejected a token that has not locally expired. A newer token already in storage (e.g. from a peer tab) is still preferred over a fresh mint.
+   * @param force - When true, re-mint even if the current token still looks locally valid â€” used by the 401 recovery path, where the server has rejected a token that has not locally expired. A newer token already in storage (e.g. from a peer tab) is still preferred over a fresh mint.
    * @returns The refresh promise if available; otherwise undefined.
    * @see https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokens
    */
